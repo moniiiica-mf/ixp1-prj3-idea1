@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Mind/Body Disconnect — Three Strings (LIGHT)</title>
+    <title>Mind/Body Disconnect — The Three Strings (Enhanced Visual Clarity)</title>
     <style>
         * {
             margin: 0;
@@ -70,6 +70,33 @@
             transition: opacity 0.5s;
             max-width: 80%;
         }
+        #intro-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            padding: 30px;
+            border-radius: 8px;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 1s;
+            max-width: 500px;
+            font-size: 16px;
+            line-height: 1.6;
+            pointer-events: none;
+        }
+        #white-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: white;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 1s;
+        }
         #mobile-controls {
             position: fixed;
             bottom: 0;
@@ -117,8 +144,10 @@
 </head>
 <body>
     <div id="canvas-container"></div>
+    <div id="white-overlay"></div>
     <div id="ui-overlay">
         <div id="helper-text">WASD / arrows to move • Right-drag to look • [R] restart</div>
+        <div id="intro-text">Three strings are tied to you. Each leads somewhere different.<br>Move toward one — and see where it takes you.</div>
         <div id="world-text"></div>
         <canvas id="progress-ring" width="60" height="60"></canvas>
         <div id="center-text"></div>
@@ -136,23 +165,25 @@
         const CONFIG = {
             AUDIO_ENABLED: false,
             MAX_PIXEL_RATIO: 1.25,
-            CAMERA_FAR: 120,
-            PARTICLE_COUNT_VOID: 150,
+            CAMERA_FAR: 200,
+            PARTICLE_COUNT_VOID: 100,
             PARTICLE_COUNT_EMOTION: 120,
             PUZZLE_PIECES_LOGIC: 50,
             PUZZLE_PIECES_MEMORY: 40,
             MELT_PLANES_COUNT: 8,
             TRANSITION_PARTICLES: 50,
-            STRING_SEGMENTS: 20,
-            CHOICE_PROGRESS_SPEED: 0.6,
+            STRING_SEGMENTS: 30,
+            CHOICE_PROGRESS_SPEED: 0.5,
             MOVE_SPEED: 5,
             LOOK_SENSITIVITY: 0.002,
             PERFORMANCE_CHECK_INTERVAL: 60,
             COLORS: {
-                VOID_SKY: 0x050507,
-                LOGIC_STRING: 0xbfd7ff,
-                EMOTION_STRING: 0xc81d3b,
-                MEMORY_STRING: 0xa88a3a,
+                VOID_SKY: 0x000000,
+                HAND_SKIN: 0xf5e9da,
+                HAND_EMISSIVE: 0xf6dcbf,
+                LOGIC_STRING: 0xAEE9FF,      // Bright cyan silver
+                EMOTION_STRING: 0xFF4A66,    // Vivid crimson pink
+                MEMORY_STRING: 0xFFD279,     // Warm gold
             }
         };
 
@@ -161,7 +192,7 @@
         let state = 'VOID_CHOICE'; // VOID_CHOICE | TRANSITION | LOGIC | EMOTION | MEMORY
         let chosenPath = null;
         let player = {
-            position: new THREE.Vector3(0, 1.6, 0),
+            position: new THREE.Vector3(0, 1.6, 5),
             velocity: new THREE.Vector3(),
             yaw: 0,
             pitch: 0
@@ -174,10 +205,11 @@
         let joystickActive = false;
         let joystickDelta = { x: 0, y: 0 };
         let touchLookDelta = { x: 0, y: 0 };
+        let firstInput = false;
 
         // Scene objects
         let strings = [];
-        let ghostHands = [];
+        let hand = null;
         let particleFields = [];
         let puzzlePieces = [];
         let meltPlanes = [];
@@ -187,6 +219,8 @@
         // Progress tracking
         let stringProgress = [0, 0, 0];
         let transitionTime = 0;
+        let cameraShake = { x: 0, y: 0 };
+        let snapAnimProgress = 0;
 
         // Performance
         let frameCount = 0;
@@ -269,9 +303,14 @@
                     dir.position.set(-2, 4, 3);
                     this.lights.push(hemi, dir);
                 } else {
-                    // Void - minimal ambient
-                    const ambient = new THREE.AmbientLight(0x222233, 0.2);
-                    this.lights.push(ambient);
+                    // Void - enhanced lighting for visibility
+                    const ambient = new THREE.AmbientLight(0x222222, 0.4);
+                    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+                    dir.position.set(5, 10, 5);
+                    const handLight = new THREE.PointLight(0xffddaa, 1.5, 10);
+                    handLight.position.set(0, 1.4, 2.5);
+                    this.handLight = handLight;
+                    this.lights.push(ambient, dir, handLight);
                 }
 
                 this.lights.forEach(light => this.scene.add(light));
@@ -287,77 +326,98 @@
 
         // ========== STRING PATH ==========
         class StringPath {
-            constructor(color, emissive, angle, name) {
+            constructor(color, angle, name) {
                 this.name = name;
                 this.color = color;
-                this.emissive = emissive;
                 this.angle = angle;
                 this.progress = 0;
-                this.baseScale = 0.08;
+                this.baseRadius = 0.05;
                 this.group = new THREE.Group();
 
-                // Create tube geometry
+                // Create curve from wrist to distance
                 const points = [];
-                const startDist = 2;
+                const wristPos = new THREE.Vector3(0, 1.4, 2.5); // Near hand position
                 const direction = new THREE.Vector3(
                     Math.sin(angle),
-                    0,
+                    -0.1, // Slight downward curve
                     Math.cos(angle)
                 );
 
-                for (let i = 0; i < 8; i++) {
-                    const dist = startDist + i * 0.8;
-                    points.push(direction.clone().multiplyScalar(dist).add(new THREE.Vector3(0, 1.2, 0)));
+                for (let i = 0; i < 12; i++) {
+                    const dist = i * 1.2;
+                    const point = direction.clone().multiplyScalar(dist).add(wristPos);
+                    // Add slight wave
+                    if (name === 'emotion') {
+                        point.x += Math.sin(i * 0.5) * 0.15;
+                    }
+                    points.push(point);
                 }
 
                 const curve = new THREE.CatmullRomCurve3(points);
-                const geometry = new THREE.TubeGeometry(curve, CONFIG.STRING_SEGMENTS, this.baseScale, 8, false);
+                const geometry = new THREE.TubeGeometry(curve, CONFIG.STRING_SEGMENTS, this.baseRadius, 8, false);
 
+                // Main string material - bright and glowing
                 const material = new THREE.MeshStandardMaterial({
                     color: color,
-                    metalness: name === 'logic' ? 0.9 : name === 'emotion' ? 0.2 : 0.4,
-                    roughness: name === 'logic' ? 0.2 : name === 'emotion' ? 0.6 : 0.7,
-                    emissive: emissive,
-                    emissiveIntensity: 0.15
+                    metalness: name === 'logic' ? 0.8 : name === 'emotion' ? 0.2 : 0.4,
+                    roughness: name === 'logic' ? 0.3 : name === 'emotion' ? 0.6 : 0.7,
+                    emissive: color,
+                    emissiveIntensity: 1.5
                 });
 
                 this.mesh = new THREE.Mesh(geometry, material);
                 this.group.add(this.mesh);
 
-                this.direction = direction;
+                // Halo glow - slightly larger transparent tube
+                const haloGeometry = new THREE.TubeGeometry(curve, CONFIG.STRING_SEGMENTS, this.baseRadius * 2.5, 8, false);
+                const haloMaterial = new THREE.MeshBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 0.25,
+                    blending: THREE.AdditiveBlending
+                });
+                this.halo = new THREE.Mesh(haloGeometry, haloMaterial);
+                this.group.add(this.halo);
+
+                this.direction = direction.normalize();
                 this.pulseClock = Math.random() * Math.PI * 2;
             }
 
             update(time, delta, isChosen, isFading) {
-                // Pulse effect
+                let baseIntensity = 1.5;
+
+                // Pulse effect for logic
                 if (this.name === 'logic') {
-                    this.pulseClock += delta;
-                    this.mesh.material.emissiveIntensity = 0.15 + Math.sin(this.pulseClock) * 0.1;
+                    this.pulseClock += delta * 1.5;
+                    baseIntensity += Math.sin(this.pulseClock) * 0.3;
                 }
 
-                // Jiggle for emotion
+                // Uneven pulse for emotion
                 if (this.name === 'emotion') {
-                    this.mesh.rotation.z = Math.sin(time * 3 + this.angle) * 0.05;
+                    baseIntensity += Math.sin(time * 3.5) * 0.4 + Math.sin(time * 7) * 0.2;
+                    this.mesh.rotation.z = Math.sin(time * 2 + this.angle) * 0.08;
                 }
 
                 // Flicker for memory
                 if (this.name === 'memory') {
-                    if (Math.random() < 0.02) {
-                        this.mesh.material.opacity = Math.random() < 0.5 ? 0.9 : 1.0;
-                        this.mesh.material.transparent = this.mesh.material.opacity < 1;
+                    if (Math.random() < 0.03) {
+                        baseIntensity *= (0.7 + Math.random() * 0.6);
                     }
                 }
 
                 // Scale and brightness based on choice
-                const targetScale = isChosen ? 1.35 : (isFading ? 0.7 : 1.0);
-                const currentScale = this.mesh.scale.x;
-                this.mesh.scale.setScalar(THREE.MathUtils.lerp(currentScale, targetScale, delta * 3));
-
-                const targetIntensity = isChosen ? 0.4 : (isFading ? 0.05 : 0.15);
+                const targetIntensity = isChosen ? 3.0 : (isFading ? 0.3 : baseIntensity);
                 this.mesh.material.emissiveIntensity = THREE.MathUtils.lerp(
                     this.mesh.material.emissiveIntensity,
                     targetIntensity,
-                    delta * 3
+                    delta * 4
+                );
+
+                const targetHaloOpacity = isChosen ? 0.5 : (isFading ? 0.1 : 0.25);
+                this.halo.material.opacity = THREE.MathUtils.lerp(
+                    this.halo.material.opacity,
+                    targetHaloOpacity,
+                    delta * 4
                 );
             }
         }
@@ -491,9 +551,72 @@
             }
         }
 
+        // ========== HAND CREATOR ==========
+        function createHand() {
+            const handGroup = new THREE.Group();
+
+            // Palm - slightly curved box/sphere
+            const palm = new THREE.Mesh(
+                new THREE.SphereGeometry(0.12, 16, 16),
+                new THREE.MeshPhysicalMaterial({
+                    color: CONFIG.COLORS.HAND_SKIN,
+                    transparent: true,
+                    opacity: 0.85,
+                    roughness: 0.4,
+                    metalness: 0.1,
+                    emissive: CONFIG.COLORS.HAND_EMISSIVE,
+                    emissiveIntensity: 0.4
+                })
+            );
+            palm.scale.set(1, 0.7, 1.2);
+            handGroup.add(palm);
+
+            // Five fingers (simplified as tapered cylinders)
+            const fingerPositions = [
+                { x: -0.12, y: 0, z: 0.08, length: 0.15, angle: -0.3 },  // Pinky
+                { x: -0.06, y: 0, z: 0.12, length: 0.18, angle: -0.1 },  // Ring
+                { x: 0, y: 0, z: 0.13, length: 0.2, angle: 0 },          // Middle
+                { x: 0.06, y: 0, z: 0.12, length: 0.18, angle: 0.1 },     // Index
+                { x: 0.12, y: -0.02, z: 0.02, length: 0.14, angle: 0.8 } // Thumb
+            ];
+
+            fingerPositions.forEach((fp, idx) => {
+                const finger = new THREE.Group();
+
+                // 3 segments per finger
+                for (let seg = 0; seg < 3; seg++) {
+                    const segLength = fp.length / 3;
+                    const segRadius = 0.015 - seg * 0.003;
+                    const segment = new THREE.Mesh(
+                        new THREE.CylinderGeometry(segRadius, segRadius * 0.9, segLength, 8),
+                        palm.material.clone()
+                    );
+                    segment.position.set(0, seg * segLength * 0.9, 0);
+                    segment.rotation.z = Math.PI / 2;
+                    finger.add(segment);
+                }
+
+                finger.position.set(fp.x, fp.y, fp.z);
+                finger.rotation.y = fp.angle;
+                finger.userData.baseRotation = fp.angle;
+                finger.userData.curveAmount = idx === 4 ? 0.3 : 0.15; // Thumb curves more
+                handGroup.add(finger);
+            });
+
+            // Position hand in front of camera
+            handGroup.position.set(0, 1.4, 2.5);
+            handGroup.rotation.x = -0.2;
+            handGroup.userData.baseY = 1.4;
+
+            return handGroup;
+        }
+
         // ========== SCENE BUILDERS ==========
         function buildVoidScene() {
             clearScene();
+
+            // Black fog for atmosphere
+            scene.fog = new THREE.FogExp2(0x000000, 0.05);
 
             // Sky box
             const skyGeo = new THREE.BoxGeometry(200, 200, 200);
@@ -505,48 +628,38 @@
             scene.add(sky);
 
             // Particle dust
-            const particles = new ParticleField(CONFIG.PARTICLE_COUNT_VOID, 2, 0xffffff, 0.08);
+            const particles = new ParticleField(CONFIG.PARTICLE_COUNT_VOID, 1.5, 0xffffff, 0.06);
             scene.add(particles.points);
             particleFields.push(particles);
 
-            // Ghost hands
-            for (let h = 0; h < 2; h++) {
-                const hand = new THREE.Group();
-                const xOffset = h === 0 ? -0.3 : 0.3;
+            // Create the 3D hand
+            hand = createHand();
+            scene.add(hand);
 
-                for (let i = 0; i < 6; i++) {
-                    const sphere = new THREE.Mesh(
-                        new THREE.SphereGeometry(0.08 - i * 0.01, 8, 8),
-                        new THREE.MeshBasicMaterial({
-                            color: 0xffffff,
-                            transparent: true,
-                            opacity: 0.12
-                        })
-                    );
-                    sphere.position.set(xOffset, 1.0 - i * 0.12, 0.5);
-                    hand.add(sphere);
-                }
-
-                hand.userData.offset = h * Math.PI;
-                hand.userData.xBase = xOffset;
-                scene.add(hand);
-                ghostHands.push(hand);
-            }
-
-            // Three strings
+            // Three bright strings attached to wrist
             const stringDefs = [
-                { angle: 0, color: CONFIG.COLORS.LOGIC_STRING, emissive: 0x1a2a44, name: 'logic' },
-                { angle: Math.PI * 2/3, color: CONFIG.COLORS.EMOTION_STRING, emissive: 0x3a0008, name: 'emotion' },
-                { angle: Math.PI * 4/3, color: CONFIG.COLORS.MEMORY_STRING, emissive: 0x2a2412, name: 'memory' }
+                { angle: 0, color: CONFIG.COLORS.LOGIC_STRING, name: 'logic' },
+                { angle: Math.PI * 2/3, color: CONFIG.COLORS.EMOTION_STRING, name: 'emotion' },
+                { angle: Math.PI * 4/3, color: CONFIG.COLORS.MEMORY_STRING, name: 'memory' }
             ];
 
             stringDefs.forEach(def => {
-                const string = new StringPath(def.color, def.emissive, def.angle, def.name);
+                const string = new StringPath(def.color, def.angle, def.name);
                 scene.add(string.group);
                 strings.push(string);
             });
 
             lightRig.setWorld('void');
+
+            // Show intro text after first input
+            setTimeout(() => {
+                if (!firstInput) {
+                    document.getElementById('intro-text').style.opacity = '1';
+                    setTimeout(() => {
+                        document.getElementById('intro-text').style.opacity = '0';
+                    }, 5000);
+                }
+            }, 500);
         }
 
         function buildLogicWorld() {
@@ -704,23 +817,25 @@
         function clearScene() {
             // Remove all dynamic objects
             strings.forEach(s => scene.remove(s.group));
-            ghostHands.forEach(h => scene.remove(h));
+            if (hand) scene.remove(hand);
             particleFields.forEach(p => scene.remove(p.points));
             puzzlePieces.forEach(p => scene.remove(p.mesh));
             meltPlanes.forEach(m => scene.remove(m));
 
             strings = [];
-            ghostHands = [];
+            hand = null;
             particleFields = [];
             puzzlePieces = [];
             meltPlanes = [];
             stringProgress = [0, 0, 0];
+            snapAnimProgress = 0;
 
             scene.fog = null;
 
             // Clear world text
             document.getElementById('world-text').style.opacity = '0';
             document.getElementById('center-text').style.opacity = '0';
+            document.getElementById('white-overlay').style.opacity = '0';
         }
 
         // ========== INPUT HANDLING ==========
@@ -728,6 +843,13 @@
             // Keyboard
             window.addEventListener('keydown', e => {
                 keys[e.key.toLowerCase()] = true;
+                if (!firstInput && (e.key.toLowerCase() === 'w' || e.key.toLowerCase() === 'a' ||
+                    e.key.toLowerCase() === 's' || e.key.toLowerCase() === 'd' ||
+                    e.key.toLowerCase() === 'arrowup' || e.key.toLowerCase() === 'arrowdown' ||
+                    e.key.toLowerCase() === 'arrowleft' || e.key.toLowerCase() === 'arrowright')) {
+                    firstInput = true;
+                    document.getElementById('intro-text').style.opacity = '0';
+                }
                 if (e.key.toLowerCase() === 'r') {
                     reset();
                 }
@@ -744,6 +866,10 @@
             window.addEventListener('mouseup', () => mouseDown = false);
             window.addEventListener('mousemove', e => {
                 if (mouseDown) {
+                    if (!firstInput) {
+                        firstInput = true;
+                        document.getElementById('intro-text').style.opacity = '0';
+                    }
                     player.yaw -= e.movementX * CONFIG.LOOK_SENSITIVITY;
                     player.pitch -= e.movementY * CONFIG.LOOK_SENSITIVITY;
                     player.pitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, player.pitch));
@@ -855,86 +981,146 @@
             player.position.x += player.velocity.x * delta;
             player.position.z += player.velocity.z * delta;
 
-            // Update camera
+            // Update camera with shake
             camera.position.copy(player.position);
             camera.rotation.order = 'YXZ';
-            camera.rotation.y = player.yaw;
-            camera.rotation.x = player.pitch;
+            camera.rotation.y = player.yaw + cameraShake.x;
+            camera.rotation.x = player.pitch + cameraShake.y;
         }
 
         // ========== UPDATE FUNCTIONS ==========
         function updateVoidChoice(time, delta) {
-            // Update ghost hands
-            ghostHands.forEach(hand => {
-                const sway = Math.sin(time * 2 + hand.userData.offset) * 0.05;
-                hand.position.x = hand.userData.xBase + sway;
-                hand.position.y = 1.4 + Math.sin(time * 1.5 + hand.userData.offset) * 0.03;
-            });
+            // Update hand animation - gentle breathing
+            if (hand) {
+                const breathe = Math.sin(time * 1.2) * 0.02;
+                hand.position.y = hand.userData.baseY + breathe;
+                hand.rotation.x = -0.2 + Math.sin(time * 0.8) * 0.03;
+
+                // Finger curl animation
+                hand.children.forEach((child, idx) => {
+                    if (child.userData.curveAmount) {
+                        const curl = Math.sin(time * 1.5 + idx * 0.5) * child.userData.curveAmount;
+                        child.rotation.x = curl * 0.2;
+                    }
+                });
+            }
 
             // Update strings and check alignment
-            const moveDir = new THREE.Vector3(player.velocity.x, 0, player.velocity.z).normalize();
-            const isMoving = player.velocity.length() > 0.1;
+            const moveDir = new THREE.Vector3(player.velocity.x, 0, player.velocity.z);
+            const isMoving = moveDir.length() > 0.1;
+            if (isMoving) moveDir.normalize();
+
+            let maxProgress = 0;
+            let maxIdx = -1;
 
             strings.forEach((string, idx) => {
                 let alignment = 0;
 
                 if (isMoving) {
                     alignment = moveDir.dot(string.direction);
-                    alignment = Math.max(0, (alignment - 0.9) * 10); // Only within ~20 degrees
+                    alignment = Math.max(0, (alignment - 0.85) * 6.67); // Within ~30 degrees
                 }
 
-                if (alignment > 0.5) {
+                if (alignment > 0.3) {
                     stringProgress[idx] = Math.min(1, stringProgress[idx] + delta * CONFIG.CHOICE_PROGRESS_SPEED);
                     // Decay others
                     strings.forEach((_, i) => {
                         if (i !== idx) {
-                            stringProgress[i] = Math.max(0, stringProgress[i] - delta * CONFIG.CHOICE_PROGRESS_SPEED * 0.5);
+                            stringProgress[i] = Math.max(0, stringProgress[i] - delta * CONFIG.CHOICE_PROGRESS_SPEED * 0.6);
                         }
                     });
                 } else {
-                    stringProgress[idx] = Math.max(0, stringProgress[idx] - delta * CONFIG.CHOICE_PROGRESS_SPEED * 0.3);
+                    stringProgress[idx] = Math.max(0, stringProgress[idx] - delta * CONFIG.CHOICE_PROGRESS_SPEED * 0.4);
                 }
 
-                const maxIdx = stringProgress.indexOf(Math.max(...stringProgress));
-                string.update(time, delta, idx === maxIdx, idx !== maxIdx && stringProgress[maxIdx] > 0.3);
-
-                // Check for completion
-                if (stringProgress[idx] >= 1.0) {
-                    state = 'TRANSITION';
-                    chosenPath = string.name;
-                    transitionTime = 0;
-                    audioLite.playSnap();
+                if (stringProgress[idx] > maxProgress) {
+                    maxProgress = stringProgress[idx];
+                    maxIdx = idx;
                 }
             });
 
+            // Update each string's visuals
+            strings.forEach((string, idx) => {
+                const isChosen = idx === maxIdx && maxProgress > 0.3;
+                const isFading = idx !== maxIdx && maxProgress > 0.3;
+                string.update(time, delta, isChosen, isFading);
+            });
+
+            // Camera shake based on progress
+            if (maxProgress > 0.5) {
+                const shakeIntensity = (maxProgress - 0.5) * 2; // 0 to 1
+                cameraShake.x = (Math.random() - 0.5) * shakeIntensity * 0.002;
+                cameraShake.y = (Math.random() - 0.5) * shakeIntensity * 0.002;
+            } else {
+                cameraShake.x *= 0.8;
+                cameraShake.y *= 0.8;
+            }
+
+            // Check for completion
+            if (maxProgress >= 1.0) {
+                state = 'TRANSITION';
+                chosenPath = strings[maxIdx].name;
+                transitionTime = 0;
+                snapAnimProgress = 0;
+                audioLite.playSnap();
+            }
+
             // Draw progress ring
-            drawProgressRing(Math.max(...stringProgress));
+            drawProgressRing(maxProgress);
         }
 
         function updateTransition(time, delta) {
             transitionTime += delta;
+            snapAnimProgress = Math.min(1, transitionTime / 0.8);
 
-            // Fade hands
-            ghostHands.forEach(hand => {
-                hand.children.forEach(sphere => {
-                    sphere.material.opacity = Math.max(0, 0.12 - transitionTime * 0.1);
+            const chosenString = strings.find(s => s.name === chosenPath);
+
+            // String tension and vibration (0 to 0.5s)
+            if (transitionTime < 0.5) {
+                const tension = snapAnimProgress * 2; // 0 to 1 over 0.5s
+                strings.forEach(string => {
+                    if (string.name === chosenPath) {
+                        // Vibrate the chosen string
+                        const vibrate = Math.sin(time * 50) * tension * 0.02;
+                        string.group.rotation.z = vibrate;
+                        string.group.scale.x = 1 + tension * 0.3;
+                        // Increase glow intensity
+                        string.mesh.material.emissiveIntensity = 1.5 + tension * 3;
+                    }
                 });
-            });
 
-            // Move camera forward
-            if (transitionTime < 1.2) {
-                const chosenString = strings.find(s => s.name === chosenPath);
-                const moveAmount = delta * 6;
-                player.position.add(chosenString.direction.clone().multiplyScalar(moveAmount));
-                camera.position.copy(player.position);
+                // Intense camera shake
+                cameraShake.x = (Math.random() - 0.5) * tension * 0.008;
+                cameraShake.y = (Math.random() - 0.5) * tension * 0.008;
             }
 
-            // Spawn streak particles (simple)
-            if (transitionTime < 0.1) {
-                const particles = new ParticleField(CONFIG.TRANSITION_PARTICLES, 4, 0xffffff, 0.6);
-                particles.points.position.copy(player.position);
-                scene.add(particles.points);
-                setTimeout(() => scene.remove(particles.points), 1500);
+            // Snap and fade to white (0.5s onwards)
+            if (transitionTime >= 0.5) {
+                const fadeProgress = (transitionTime - 0.5) / 0.7; // 0 to 1 over 0.7s
+
+                // Fade hand
+                if (hand) {
+                    hand.traverse(child => {
+                        if (child.material && child.material.opacity !== undefined) {
+                            child.material.opacity = Math.max(0, 0.85 - fadeProgress * 0.85);
+                        }
+                    });
+                }
+
+                // Fade strings
+                strings.forEach(string => {
+                    string.mesh.material.opacity = Math.max(0, 1 - fadeProgress);
+                    string.mesh.material.transparent = true;
+                    string.halo.material.opacity = Math.max(0, 0.25 - fadeProgress * 0.25);
+                });
+
+                // Fade to white overlay
+                document.getElementById('white-overlay').style.opacity = fadeProgress.toString();
+
+                // Move camera forward slightly
+                const moveAmount = delta * 2;
+                player.position.add(chosenString.direction.clone().multiplyScalar(moveAmount));
+                camera.position.copy(player.position);
             }
 
             // Complete transition
@@ -945,6 +1131,11 @@
 
                 state = chosenPath.toUpperCase();
                 audioLite.setWorld(chosenPath);
+
+                // Fade white overlay back out
+                setTimeout(() => {
+                    document.getElementById('white-overlay').style.opacity = '0';
+                }, 500);
             }
         }
 
@@ -1055,15 +1246,19 @@
         function reset() {
             state = 'VOID_CHOICE';
             chosenPath = null;
-            player.position.set(0, 1.6, 0);
+            player.position.set(0, 1.6, 5);
             player.velocity.set(0, 0, 0);
             player.yaw = 0;
             player.pitch = 0;
             stringProgress = [0, 0, 0];
+            cameraShake = { x: 0, y: 0 };
+            snapAnimProgress = 0;
+            firstInput = false;
 
             buildVoidScene();
 
             document.getElementById('center-text').style.opacity = '0';
+            document.getElementById('white-overlay').style.opacity = '0';
             document.getElementById('helper-text').style.opacity = '1';
             setTimeout(() => {
                 document.getElementById('helper-text').style.opacity = '0';
@@ -1084,6 +1279,8 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, CONFIG.MAX_PIXEL_RATIO));
             renderer.outputEncoding = THREE.sRGBEncoding;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.0;
             document.getElementById('canvas-container').appendChild(renderer.domElement);
 
             // Clock
