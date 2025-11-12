@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mind/Body Disconnect — Three Strings (Rooms + Gates)</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            background: #000;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #ui-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            color: #fff;
+        }
+        #helper-text {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 12px 18px;
+            border-radius: 4px;
+            font-size: 11px;
+            opacity: 1;
+            transition: opacity 0.5s;
+        }
+        #world-text {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px 15px;
+            border-radius: 4px;
+            font-size: 10px;
+            opacity: 0;
+            letter-spacing: 1px;
+        }
+        #progress-ring {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 80px;
+        }
+        #center-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9);
+            padding: 30px 40px;
+            border: 2px solid rgba(255,255,255,0.3);
+            text-align: center;
+            opacity: 0;
+            transition: opacity 0.5s;
+            max-width: 600px;
+            line-height: 1.8;
+        }
+        #gate-ui {
+            position: absolute;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.8);
+            padding: 15px 25px;
+            border: 1px solid rgba(255,255,255,0.4);
+            border-radius: 4px;
+            text-align: center;
+            opacity: 0;
+            font-size: 13px;
+        }
+        .prompt {
+            position: absolute;
+            background: rgba(0,0,0,0.85);
+            padding: 12px 20px;
+            border: 1px solid rgba(255,255,255,0.3);
+            font-size: 11px;
+            opacity: 0;
+            transition: opacity 0.5s;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="ui-overlay">
+        <div id="helper-text">WASD/Arrows move • Right-drag look • Q/E channel • Space calm • X delete • R restart</div>
+        <div id="world-text"></div>
+        <canvas id="progress-ring" width="80" height="80"></canvas>
+        <div id="center-text"></div>
+        <div id="gate-ui"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.157.0/build/three.min.js"></script>
+    <script>
+        // ========== CONFIGURATION ==========
+        const CONFIG = {
+            AUDIO_ENABLED: false,
+            MAX_PIXEL_RATIO: 1.5,
+            CAMERA_FAR: 160,
+            MOVE_SPEED: 4,
+            LOOK_SENSITIVITY: 0.003,
+            COLORS: {
+                VOID_BG: 0x0a0a0f,
+                HAND_SKIN: 0xf5e9da,
+                HAND_EMISSIVE: 0xf6dcbf,
+                LOGIC: 0xAEE9FF,
+                EMOTION: 0xFF4A66,
+                MEMORY: 0xFFD279
+            }
+        };
+
+        // ========== GLOBAL STATE ==========
+        let scene, camera, renderer, clock;
+        let state = 'VOID_CHOICE'; // VOID_CHOICE | TRANSITION | LOGIC_ROOM | EMOTION_ROOM | MEMORY_ROOM | ENDING
+        let chosenPath = null;
+        let player = {
+            position: new THREE.Vector3(0, 1.6, 5),
+            velocity: new THREE.Vector3(),
+            yaw: 0,
+            pitch: 0
+        };
+        let keys = {};
+        let mouseDown = false;
+
+        // Scene objects
+        let hand = null;
+        let strings = [];
+        let stringProgress = [0, 0, 0];
+
+        // Gate states
+        let tileBoard = null;
+        let tvWall = null;
+        let memoryFragments = [];
+        let gateResolved = false;
+        let emotionChannelIndex = 0;
+        let emotionCalming = false;
+        let emotionCalmTime = 0;
+        let emotionWatchTime = 0;
+        let emotionChannelSwitches = 0;
+        let memoryPairedCount = 0;
+        let memoryDeletedCount = 0;
+
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+
+        // ========== HAND RIG ==========
+        class HandRig {
+            constructor() {
+                this.group = new THREE.Group();
+
+                // Palm
+                const palmGeo = new THREE.SphereGeometry(0.12, 16, 16);
+                const palmMat = new THREE.MeshPhysicalMaterial({
+                    color: CONFIG.COLORS.HAND_SKIN,
+                    transparent: true,
+                    opacity: 0.85,
+                    emissive: CONFIG.COLORS.HAND_EMISSIVE,
+                    emissiveIntensity: 0.35,
+                    roughness: 0.45,
+                    metalness: 0.05
+                });
+                const palm = new THREE.Mesh(palmGeo, palmMat);
+                palm.scale.set(1, 0.8, 1.3);
+                this.group.add(palm);
+
+                // Five fingers
+                const fingerDefs = [
+                    { x: -0.12, z: 0.08, length: 0.15 },
+                    { x: -0.06, z: 0.12, length: 0.18 },
+                    { x: 0, z: 0.13, length: 0.2 },
+                    { x: 0.06, z: 0.12, length: 0.18 },
+                    { x: 0.11, z: 0.03, length: 0.13 }
+                ];
+
+                fingerDefs.forEach(def => {
+                    const finger = new THREE.Group();
+                    for (let i = 0; i < 3; i++) {
+                        const segGeo = new THREE.CylinderGeometry(0.015, 0.012, def.length / 3, 8);
+                        const seg = new THREE.Mesh(segGeo, palmMat.clone());
+                        seg.position.y = i * (def.length / 3) * 0.9;
+                        seg.rotation.z = Math.PI / 2;
+                        finger.add(seg);
+                    }
+                    finger.position.set(def.x, 0, def.z);
+                    this.group.add(finger);
+                });
+
+                this.group.position.set(0, 1.3, 2.8);
+                this.group.rotation.x = -0.3;
+                this.baseY = 1.3;
+            }
+
+            update(time, delta) {
+                this.group.position.y = this.baseY + Math.sin(time * 1.2) * 0.02;
+                this.group.rotation.x = -0.3 + Math.sin(time * 0.8) * 0.04;
+            }
+
+            getWristPosition() {
+                const wristLocal = new THREE.Vector3(0, -0.1, 0);
+                return wristLocal.applyMatrix4(this.group.matrixWorld);
+            }
+        }
+
+        // ========== STRING PATH ==========
+        class StringPath {
+            constructor(color, angle, name) {
+                this.name = name;
+                this.color = color;
+                this.angle = angle;
+                this.group = new THREE.Group();
+
+                const wristPos = new THREE.Vector3(0, 1.2, 2.8);
+                const direction = new THREE.Vector3(
+                    Math.sin(angle),
+                    -0.05,
+                    Math.cos(angle)
+                ).normalize();
+
+                this.direction = direction;
+
+                const points = [];
+                for (let i = 0; i < 15; i++) {
+                    const point = wristPos.clone().add(direction.clone().multiplyScalar(i * 2));
+                    if (name === 'emotion' && i > 2) {
+                        point.x += Math.sin(i * 0.5) * 0.2;
+                    }
+                    if (name === 'memory' && i > 3) {
+                        point.y -= i * 0.02;
+                    }
+                    points.push(point);
+                }
+
+                const curve = new THREE.CatmullRomCurve3(points);
+                const tubeGeo = new THREE.TubeGeometry(curve, 40, 0.04, 8, false);
+                const tubeMat = new THREE.MeshStandardMaterial({
+                    color: color,
+                    emissive: color,
+                    emissiveIntensity: 1.6,
+                    metalness: 0.6,
+                    roughness: 0.3
+                });
+
+                this.mesh = new THREE.Mesh(tubeGeo, tubeMat);
+                this.group.add(this.mesh);
+
+                // Halo
+                const haloGeo = new THREE.TubeGeometry(curve, 40, 0.05, 8, false);
+                const haloMat = new THREE.MeshBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 0.25,
+                    blending: THREE.AdditiveBlending
+                });
+                this.halo = new THREE.Mesh(haloGeo, haloMat);
+                this.group.add(this.halo);
+
+                this.pulseClock = 0;
+            }
+
+            update(time, delta, isChosen) {
+                if (this.name === 'logic') {
+                    this.pulseClock += delta;
+                    this.mesh.material.emissiveIntensity = 1.6 + Math.sin(this.pulseClock) * 0.3;
+                } else if (this.name === 'emotion') {
+                    this.mesh.material.emissiveIntensity = 1.6 + Math.sin(time * 3) * 0.4 + Math.sin(time * 7) * 0.2;
+                } else if (this.name === 'memory') {
+                    if (Math.random() < 0.02) {
+                        this.mesh.material.emissiveIntensity = 0.8 + Math.random() * 1.0;
+                    }
+                }
+
+                const targetIntensity = isChosen ? 3.0 : 1.6;
+                const targetScale = isChosen ? 1.35 : 1.0;
+                const targetHaloOpacity = isChosen ? 0.5 : 0.25;
+
+                this.mesh.material.emissiveIntensity = THREE.MathUtils.lerp(
+                    this.mesh.material.emissiveIntensity,
+                    targetIntensity,
+                    delta * 3
+                );
+                this.group.scale.setScalar(THREE.MathUtils.lerp(
+                    this.group.scale.x,
+                    targetScale,
+                    delta * 3
+                ));
+                this.halo.material.opacity = THREE.MathUtils.lerp(
+                    this.halo.material.opacity,
+                    targetHaloOpacity,
+                    delta * 3
+                );
+            }
+        }
+
+        // ========== TILE BOARD (LOGIC GATE) ==========
+        class TileBoard {
+            constructor() {
+                this.group = new THREE.Group();
+                this.tiles = [];
+                this.emptyIndex = 15;
+                this.gridSize = 4;
+                this.tileSize = 0.9;
+                this.solved = false;
+
+                const targetIndices = [];
+                for (let i = 0; i < 16; i++) targetIndices.push(i);
+
+                // Shuffle
+                for (let i = 0; i < 100; i++) {
+                    const movable = this.getMovableTiles(targetIndices);
+                    if (movable.length > 0) {
+                        const idx = movable[Math.floor(Math.random() * movable.length)];
+                        const emptyIdx = targetIndices.indexOf(15);
+                        [targetIndices[idx], targetIndices[emptyIdx]] = [targetIndices[emptyIdx], targetIndices[idx]];
+                    }
+                }
+
+                this.currentIndices = [...targetIndices];
+
+                for (let i = 0; i < 16; i++) {
+                    if (i === this.emptyIndex) continue;
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 128;
+                    canvas.height = 128;
+                    const ctx = canvas.getContext('2d');
+
+                    const gradient = ctx.createLinearGradient(0, 0, 128, 128);
+                    gradient.addColorStop(0, `hsl(${i * 23}, 60%, 50%)`);
+                    gradient.addColorStop(1, `hsl(${i * 23 + 30}, 60%, 30%)`);
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(0, 0, 128, 128);
+
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(2, 2, 124, 124);
+
+                    ctx.fillStyle = '#fff';
+                    ctx.font = 'bold 60px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText((i + 1).toString(), 64, 64);
+
+                    const texture = new THREE.CanvasTexture(canvas);
+                    const tileMat = new THREE.MeshStandardMaterial({ map: texture });
+                    const tileGeo = new THREE.PlaneGeometry(this.tileSize, this.tileSize);
+                    const tile = new THREE.Mesh(tileGeo, tileMat);
+
+                    tile.userData.id = i;
+                    this.tiles.push(tile);
+                    this.group.add(tile);
+                }
+
+                this.updatePositions();
+                this.group.position.set(0, 1.5, -3);
+            }
+
+            getMovableTiles(indices) {
+                const emptyIdx = indices.indexOf(15);
+                const emptyRow = Math.floor(emptyIdx / this.gridSize);
+                const emptyCol = emptyIdx % this.gridSize;
+                const movable = [];
+
+                [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+                    const newRow = emptyRow + dr;
+                    const newCol = emptyCol + dc;
+                    if (newRow >= 0 && newRow < this.gridSize && newCol >= 0 && newCol < this.gridSize) {
+                        movable.push(newRow * this.gridSize + newCol);
+                    }
+                });
+                return movable;
+            }
+
+            updatePositions() {
+                this.tiles.forEach(tile => {
+                    const id = tile.userData.id;
+                    const currentIdx = this.currentIndices.indexOf(id);
+                    const row = Math.floor(currentIdx / this.gridSize);
+                    const col = currentIdx % this.gridSize;
+
+                    const x = (col - 1.5) * this.tileSize;
+                    const y = (1.5 - row) * this.tileSize;
+
+                    tile.position.set(x, y, 0);
+                });
+            }
+
+            tryMove(clickedTile) {
+                if (this.solved) return;
+
+                const id = clickedTile.userData.id;
+                const clickedIdx = this.currentIndices.indexOf(id);
+                const emptyIdx = this.currentIndices.indexOf(15);
+
+                const movable = this.getMovableTiles(this.currentIndices);
+                if (movable.includes(clickedIdx)) {
+                    [this.currentIndices[clickedIdx], this.currentIndices[emptyIdx]] =
+                        [this.currentIndices[emptyIdx], this.currentIndices[clickedIdx]];
+
+                    this.updatePositions();
+                    this.checkSolved();
+                }
+            }
+
+            checkSolved() {
+                for (let i = 0; i < 15; i++) {
+                    if (this.currentIndices[i] !== i) return;
+                }
+                this.solved = true;
+                gateResolved = true;
+
+                const worldText = document.getElementById('world-text');
+                worldText.textContent = 'logic: active | connection: stable';
+
+                const gateUI = document.getElementById('gate-ui');
+                gateUI.textContent = 'Puzzle solved! Path opening...';
+                gateUI.style.opacity = '1';
+
+                setTimeout(() => {
+                    state = 'ENDING';
+                }, 2000);
+            }
+
+            update(time, delta) {
+                // Animate
+            }
+        }
+
+        // ========== TV WALL (EMOTION GATE) ==========
+        class TVWall {
+            constructor() {
+                this.group = new THREE.Group();
+                this.screens = [];
+                this.channelIndex = 0;
+                this.watchTime = 0;
+                this.calmTime = 0;
+                this.channelSwitches = 0;
+
+                const channels = ['JOY', 'RAGE', 'FEAR', 'LONGING', 'EUPHORIA', 'NUMB'];
+
+                for (let row = 0; row < 3; row++) {
+                    for (let col = 0; col < 3; col++) {
+                        const screen = this.createScreen(channels[this.channelIndex % channels.length]);
+                        screen.position.set((col - 1) * 1.2, (1 - row) * 0.8 + 1.5, -4);
+                        this.screens.push(screen);
+                        this.group.add(screen);
+                    }
+                }
+            }
+
+            createScreen(emotion) {
+                const canvas = document.createElement('canvas');
+                canvas.width = 256;
+                canvas.height = 160;
+                const ctx = canvas.getContext('2d');
+
+                const gradient = ctx.createRadialGradient(128, 80, 0, 128, 80, 120);
+                gradient.addColorStop(0, `hsl(${Math.random() * 360}, 70%, 50%)`);
+                gradient.addColorStop(1, `hsl(${Math.random() * 360}, 70%, 20%)`);
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, 256, 160);
+
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 40px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(emotion, 128, 80);
+
+                const texture = new THREE.CanvasTexture(canvas);
+                const material = new THREE.MeshStandardMaterial({
+                    map: texture,
+                    emissive: CONFIG.COLORS.EMOTION,
+                    emissiveIntensity: 0.3
+                });
+
+                const screen = new THREE.Mesh(new THREE.PlaneGeometry(1, 0.6), material);
+                screen.userData.texture = texture;
+                screen.userData.canvas = canvas;
+                screen.userData.emotion = emotion;
+                return screen;
+            }
+
+            switchChannel(direction) {
+                const channels = ['JOY', 'RAGE', 'FEAR', 'LONGING', 'EUPHORIA', 'NUMB'];
+                this.channelIndex = (this.channelIndex + direction + channels.length) % channels.length;
+                this.channelSwitches++;
+
+                this.screens.forEach(screen => {
+                    const ctx = screen.userData.canvas.getContext('2d');
+                    const emotion = channels[this.channelIndex];
+
+                    const gradient = ctx.createRadialGradient(128, 80, 0, 128, 80, 120);
+                    gradient.addColorStop(0, `hsl(${Math.random() * 360}, 70%, 50%)`);
+                    gradient.addColorStop(1, `hsl(${Math.random() * 360}, 70%, 20%)`);
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(0, 0, 256, 160);
+
+                    ctx.fillStyle = '#fff';
+                    ctx.font = 'bold 40px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(emotion, 128, 80);
+
+                    screen.userData.texture.needsUpdate = true;
+                });
+            }
+
+            update(time, delta, isCalming) {
+                const intensity = isCalming ? 0.1 : 0.3 + Math.sin(time * 2) * 0.2;
+
+                this.screens.forEach(screen => {
+                    screen.material.emissiveIntensity = THREE.MathUtils.lerp(
+                        screen.material.emissiveIntensity,
+                        intensity,
+                        delta * 3
+                    );
+                });
+
+                if (isCalming) {
+                    this.calmTime += delta;
+                } else {
+                    this.watchTime += delta;
+                }
+
+                // Check resolution
+                if ((this.watchTime > 15 && this.channelSwitches < 3) ||
+                    (this.calmTime > 3 && this.channelSwitches >= 3)) {
+                    gateResolved = true;
+
+                    const gateUI = document.getElementById('gate-ui');
+                    gateUI.textContent = this.watchTime > 15 ? 'Overwhelmed. Continuing...' : 'Disengaged. Path clear.';
+                    gateUI.style.opacity = '1';
+
+                    setTimeout(() => {
+                        state = 'ENDING';
+                    }, 2000);
+                }
+            }
+        }
+
+        // ========== MEMORY FRAGMENT ==========
+        class MemoryFragment {
+            constructor(x, y, z, tag, word) {
+                this.tag = tag;
+                this.word = word;
+                this.paired = false;
+                this.deleted = false;
+
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 128;
+                const ctx = canvas.getContext('2d');
+
+                ctx.fillStyle = '#d4b896';
+                ctx.fillRect(0, 0, 128, 128);
+
+                for (let i = 0; i < 150; i++) {
+                    ctx.fillStyle = `rgba(${100 + Math.random() * 50},${80 + Math.random() * 40},30,${Math.random() * 0.3})`;
+                    ctx.fillRect(Math.random() * 128, Math.random() * 128, 2, 2);
+                }
+
+                ctx.fillStyle = '#4a3a2a';
+                ctx.font = '16px Courier New';
+                ctx.textAlign = 'center';
+                ctx.fillText(word, 64, 64);
+
+                const texture = new THREE.CanvasTexture(canvas);
+                const material = new THREE.MeshStandardMaterial({
+                    map: texture,
+                    transparent: true,
+                    opacity: 0.8,
+                    side: THREE.DoubleSide
+                });
+
+                this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 1.2), material);
+                this.mesh.position.set(x, y, z);
+                this.mesh.userData.fragment = this;
+
+                this.baseY = y;
+                this.floatOffset = Math.random() * Math.PI * 2;
+            }
+
+            update(time, delta) {
+                if (!this.deleted) {
+                    this.mesh.position.y = this.baseY + Math.sin(time * 0.5 + this.floatOffset) * 0.2;
+                    this.mesh.rotation.y += delta * 0.3;
+                }
+
+                if (this.deleted) {
+                    this.mesh.material.opacity -= delta * 0.5;
+                    this.mesh.scale.multiplyScalar(0.95);
+                }
+            }
+
+            delete() {
+                this.deleted = true;
+                memoryDeletedCount++;
+            }
+
+            pair(other) {
+                if (this.tag === other.tag && !this.paired && !other.paired) {
+                    this.paired = true;
+                    other.paired = true;
+                    memoryPairedCount += 2;
+
+                    this.mesh.material.emissive = new THREE.Color(CONFIG.COLORS.MEMORY);
+                    this.mesh.material.emissiveIntensity = 0.5;
+                    other.mesh.material.emissive = new THREE.Color(CONFIG.COLORS.MEMORY);
+                    other.mesh.material.emissiveIntensity = 0.5;
+
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        // ========== SCENE BUILDERS ==========
+        function buildVoidScene() {
+            clearScene();
+
+            scene.background = new THREE.Color(CONFIG.COLORS.VOID_BG);
+            scene.fog = new THREE.Fog(CONFIG.COLORS.VOID_BG, 10, 50);
+
+            // Hand
+            hand = new HandRig();
+            scene.add(hand.group);
+
+            // Strings
+            const stringDefs = [
+                { angle: 0, color: CONFIG.COLORS.LOGIC, name: 'logic' },
+                { angle: Math.PI * 2 / 3, color: CONFIG.COLORS.EMOTION, name: 'emotion' },
+                { angle: Math.PI * 4 / 3, color: CONFIG.COLORS.MEMORY, name: 'memory' }
+            ];
+
+            stringDefs.forEach(def => {
+                const string = new StringPath(def.color, def.angle, def.name);
+                scene.add(string.group);
+                strings.push(string);
+            });
+
+            // Lighting
+            const ambient = new THREE.AmbientLight(0x404060, 0.5);
+            const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+            dir.position.set(5, 10, 5);
+            const handLight = new THREE.PointLight(0xffddaa, 1.5, 10);
+            handLight.position.copy(hand.group.position);
+
+            scene.add(ambient, dir, handLight);
+
+            // Dust particles
+            const dustGeo = new THREE.BufferGeometry();
+            const dustPos = new Float32Array(100 * 3);
+            for (let i = 0; i < 100; i++) {
+                dustPos[i * 3] = (Math.random() - 0.5) * 40;
+                dustPos[i * 3 + 1] = Math.random() * 20;
+                dustPos[i * 3 + 2] = (Math.random() - 0.5) * 40;
+            }
+            dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+            const dustMat = new THREE.PointsMaterial({
+                color: 0xffffff,
+                size: 0.05,
+                transparent: true,
+                opacity: 0.3
+            });
+            const dust = new THREE.Points(dustGeo, dustMat);
+            scene.add(dust);
+        }
+
+        function buildLogicRoom() {
+            clearScene();
+
+            scene.background = new THREE.Color(0x0d1520);
+            scene.fog = new THREE.Fog(0x0d1520, 12, 60);
+
+            // Grid floor
+            const gridHelper = new THREE.GridHelper(40, 40, CONFIG.COLORS.LOGIC, CONFIG.COLORS.LOGIC);
+            gridHelper.material.opacity = 0.3;
+            gridHelper.material.transparent = true;
+            scene.add(gridHelper);
+
+            // Tile board
+            tileBoard = new TileBoard();
+            scene.add(tileBoard.group);
+
+            // Lighting
+            const ambient = new THREE.AmbientLight(0x4488aa, 0.4);
+            const dir = new THREE.DirectionalLight(0x88ccff, 0.8);
+            dir.position.set(5, 10, 5);
+            scene.add(ambient, dir);
+
+            // UI
+            const worldText = document.getElementById('world-text');
+            worldText.textContent = 'emotion: disabled | memory: archived';
+            worldText.style.opacity = '1';
+            worldText.style.color = '#6db3ff';
+
+            const gateUI = document.getElementById('gate-ui');
+            gateUI.textContent = 'Solve the puzzle to continue';
+            gateUI.style.opacity = '1';
+
+            setInterval(() => {
+                if (!gateResolved) {
+                    worldText.textContent = worldText.textContent === 'emotion: disabled | memory: archived'
+                        ? 'logic: active | connection: stable'
+                        : 'emotion: disabled | memory: archived';
+                }
+            }, 3000);
+        }
+
+        function buildEmotionRoom() {
+            clearScene();
+
+            scene.background = new THREE.Color(0x1a0505);
+            scene.fog = new THREE.Fog(0x24060B, 16, 60);
+
+            // TV Wall
+            tvWall = new TVWall();
+            scene.add(tvWall.group);
+
+            // Lighting
+            const ambient = new THREE.AmbientLight(0x442020, 0.5);
+            const point = new THREE.PointLight(CONFIG.COLORS.EMOTION, 2, 20);
+            point.position.set(0, 2, 0);
+            scene.add(ambient, point);
+
+            // UI
+            const worldText = document.getElementById('world-text');
+            worldText.textContent = 'You felt this once. Remember?';
+            worldText.style.opacity = '1';
+            worldText.style.color = '#ff3355';
+
+            const gateUI = document.getElementById('gate-ui');
+            gateUI.innerHTML = 'Q/E: Switch channel • Space: Calm<br>Watch or disengage to continue';
+            gateUI.style.opacity = '1';
+
+            // Prompts
+            setTimeout(() => showPrompt("You can change the channel.", 30, 70), 2000);
+            setTimeout(() => showPrompt("You don't have to keep watching.", 50, 20), 5000);
+            setTimeout(() => showPrompt("It's okay to step back.", 70, 50), 8000);
+        }
+
+        function buildMemoryRoom() {
+            clearScene();
+
+            scene.background = new THREE.Color(0x0f0a05);
+            scene.fog = new THREE.Fog(0x130E08, 14, 65);
+
+            // Memory fragments
+            const words = ['window', 'river', 'sunday', 'sweater', 'apology', 'summer'];
+            const tags = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5];
+
+            for (let i = 0; i < 12; i++) {
+                const angle = (i / 12) * Math.PI * 2;
+                const radius = 4 + Math.random() * 3;
+                const x = Math.cos(angle) * radius;
+                const z = Math.sin(angle) * radius;
+                const y = 1 + Math.random() * 2;
+
+                const fragment = new MemoryFragment(x, y, z, tags[i], words[tags[i]]);
+                scene.add(fragment.mesh);
+                memoryFragments.push(fragment);
+            }
+
+            // Lighting
+            const ambient = new THREE.AmbientLight(0x443322, 0.4);
+            const dir = new THREE.DirectionalLight(0xffbb66, 0.6);
+            dir.position.set(-3, 5, 4);
+            scene.add(ambient, dir);
+
+            // UI
+            const worldText = document.getElementById('world-text');
+            worldText.textContent = 'memory_fragment_0' + Math.floor(Math.random() * 9) + '.dat';
+            worldText.style.opacity = '1';
+            worldText.style.color = '#ffaa44';
+
+            const gateUI = document.getElementById('gate-ui');
+            gateUI.innerHTML = 'Click to pair • X to delete<br>Paired: 0 | Deleted: 0';
+            gateUI.style.opacity = '1';
+
+            // Prompts
+            setTimeout(() => showPrompt("Would you like to delete this memory?", 25, 60), 1500);
+            setTimeout(() => showPrompt("You are about to connect emotionally. Continue?", 55, 30), 4000);
+            setTimeout(() => showPrompt("Are you still you?", 80, 75), 7000);
+        }
+
+        function clearScene() {
+            while (scene.children.length > 0) {
+                scene.remove(scene.children[0]);
+            }
+
+            hand = null;
+            strings = [];
+            stringProgress = [0, 0, 0];
+            tileBoard = null;
+            tvWall = null;
+            memoryFragments = [];
+            gateResolved = false;
+            memoryPairedCount = 0;
+            memoryDeletedCount = 0;
+            emotionChannelIndex = 0;
+            emotionWatchTime = 0;
+            emotionCalmTime = 0;
+            emotionChannelSwitches = 0;
+
+            document.getElementById('world-text').style.opacity = '0';
+            document.getElementById('gate-ui').style.opacity = '0';
+            document.querySelectorAll('.prompt').forEach(p => p.remove());
+        }
+
+        function showPrompt(text, topPercent, leftPercent) {
+            const div = document.createElement('div');
+            div.className = 'prompt';
+            div.textContent = text;
+            div.style.top = topPercent + '%';
+            div.style.left = leftPercent + '%';
+            document.getElementById('ui-overlay').appendChild(div);
+
+            setTimeout(() => div.style.opacity = '1', 100);
+            setTimeout(() => div.style.opacity = '0', 3000);
+            setTimeout(() => div.remove(), 3500);
+        }
+
+        // ========== INPUT ==========
+        function setupInput() {
+            window.addEventListener('keydown', e => {
+                keys[e.key.toLowerCase()] = true;
+
+                if (e.key.toLowerCase() === 'r') reset();
+
+                if (state === 'EMOTION_ROOM' && tvWall) {
+                    if (e.key.toLowerCase() === 'q') tvWall.switchChannel(-1);
+                    if (e.key.toLowerCase() === 'e') tvWall.switchChannel(1);
+                }
+
+                if (state === 'MEMORY_ROOM' && e.key.toLowerCase() === 'x') {
+                    raycaster.setFromCamera(new THREE.Vector2(), camera);
+                    const intersects = raycaster.intersectObjects(memoryFragments.map(f => f.mesh));
+                    if (intersects.length > 0) {
+                        const fragment = intersects[0].object.userData.fragment;
+                        if (!fragment.deleted) {
+                            fragment.delete();
+                            updateMemoryUI();
+                        }
+                    }
+                }
+            });
+
+            window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+            window.addEventListener('mousedown', e => {
+                if (e.button === 2) {
+                    mouseDown = true;
+                    e.preventDefault();
+                }
+
+                if (e.button === 0 && state === 'LOGIC_ROOM' && tileBoard) {
+                    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                    raycaster.setFromCamera(mouse, camera);
+                    const intersects = raycaster.intersectObjects(tileBoard.tiles);
+                    if (intersects.length > 0) {
+                        tileBoard.tryMove(intersects[0].object);
+                    }
+                }
+
+                if (e.button === 0 && state === 'MEMORY_ROOM') {
+                    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                    raycaster.setFromCamera(mouse, camera);
+                    const intersects = raycaster.intersectObjects(memoryFragments.map(f => f.mesh));
+                    if (intersects.length > 0) {
+                        const fragment = intersects[0].object.userData.fragment;
+                        if (!fragment.paired && !fragment.deleted) {
+                            // Try to pair with nearby
+                            for (const other of memoryFragments) {
+                                if (other !== fragment && !other.paired && !other.deleted) {
+                                    const dist = fragment.mesh.position.distanceTo(other.mesh.position);
+                                    if (dist < 3 && fragment.pair(other)) {
+                                        updateMemoryUI();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            window.addEventListener('mouseup', () => mouseDown = false);
+            window.addEventListener('mousemove', e => {
+                if (mouseDown) {
+                    player.yaw -= e.movementX * CONFIG.LOOK_SENSITIVITY;
+                    player.pitch -= e.movementY * CONFIG.LOOK_SENSITIVITY;
+                    player.pitch = Math.max(-Math.PI / 2.5, Math.min(Math.PI / 2.5, player.pitch));
+                }
+            });
+            window.addEventListener('contextmenu', e => e.preventDefault());
+
+            setTimeout(() => {
+                document.getElementById('helper-text').style.opacity = '0';
+            }, 8000);
+        }
+
+        function updateMemoryUI() {
+            const gateUI = document.getElementById('gate-ui');
+            gateUI.innerHTML = `Click to pair • X to delete<br>Paired: ${memoryPairedCount} | Deleted: ${memoryDeletedCount}`;
+
+            // Check resolution
+            if ((memoryPairedCount >= 6) || (memoryDeletedCount >= 6)) {
+                gateResolved = true;
+                gateUI.textContent = memoryPairedCount >= 6 ? 'Reconstruction complete.' : 'Memory cleared.';
+
+                setTimeout(() => {
+                    state = 'ENDING';
+                }, 2000);
+            }
+        }
+
+        function handleMovement(delta) {
+            const moveVector = new THREE.Vector3();
+
+            if (keys['w'] || keys['arrowup']) moveVector.z -= 1;
+            if (keys['s'] || keys['arrowdown']) moveVector.z += 1;
+            if (keys['a'] || keys['arrowleft']) moveVector.x -= 1;
+            if (keys['d'] || keys['arrowright']) moveVector.x += 1;
+
+            if (moveVector.length() > 0) {
+                moveVector.normalize();
+
+                const cos = Math.cos(player.yaw);
+                const sin = Math.sin(player.yaw);
+                const rotatedX = moveVector.x * cos - moveVector.z * sin;
+                const rotatedZ = moveVector.x * sin + moveVector.z * cos;
+
+                player.velocity.x = rotatedX * CONFIG.MOVE_SPEED;
+                player.velocity.z = rotatedZ * CONFIG.MOVE_SPEED;
+            } else {
+                player.velocity.x *= 0.85;
+                player.velocity.z *= 0.85;
+            }
+
+            player.position.x += player.velocity.x * delta;
+            player.position.z += player.velocity.z * delta;
+
+            camera.position.copy(player.position);
+            camera.rotation.order = 'YXZ';
+            camera.rotation.y = player.yaw;
+            camera.rotation.x = player.pitch;
+        }
+
+        function drawProgressRing(progress) {
+            const canvas = document.getElementById('progress-ring');
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, 80, 80);
+
+            if (progress > 0) {
+                ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.arc(40, 40, 32, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+
+        // ========== UPDATE ==========
+        function updateVoidChoice(time, delta) {
+            hand.update(time, delta);
+
+            // Check heading alignment
+            const forward = new THREE.Vector3(0, 0, -1);
+            forward.applyQuaternion(camera.quaternion);
+            forward.y = 0;
+            forward.normalize();
+
+            const isMoving = keys['w'] || keys['arrowup'];
+
+            let maxProgress = 0;
+            let maxIdx = -1;
+
+            strings.forEach((string, idx) => {
+                let alignment = 0;
+
+                if (isMoving) {
+                    alignment = forward.dot(string.direction);
+                    const angleDeg = Math.acos(alignment) * (180 / Math.PI);
+                    if (angleDeg < 20) {
+                        stringProgress[idx] = Math.min(1, stringProgress[idx] + delta * 0.4);
+                    } else {
+                        stringProgress[idx] = Math.max(0, stringProgress[idx] - delta * 0.15);
+                    }
+                } else {
+                    stringProgress[idx] = Math.max(0, stringProgress[idx] - delta * 0.2);
+                }
+
+                if (stringProgress[idx] > maxProgress) {
+                    maxProgress = stringProgress[idx];
+                    maxIdx = idx;
+                }
+            });
+
+            strings.forEach((string, idx) => {
+                string.update(time, delta, idx === maxIdx);
+            });
+
+            drawProgressRing(maxProgress);
+
+            if (maxProgress >= 1.0) {
+                state = 'TRANSITION';
+                chosenPath = strings[maxIdx].name;
+            }
+        }
+
+        function updateTransition(time, delta) {
+            // Fade out and switch
+            renderer.toneMappingExposure = THREE.MathUtils.lerp(renderer.toneMappingExposure, 1.6, delta * 5);
+
+            setTimeout(() => {
+                if (chosenPath === 'logic') {
+                    buildLogicRoom();
+                    state = 'LOGIC_ROOM';
+                } else if (chosenPath === 'emotion') {
+                    buildEmotionRoom();
+                    state = 'EMOTION_ROOM';
+                } else if (chosenPath === 'memory') {
+                    buildMemoryRoom();
+                    state = 'MEMORY_ROOM';
+                }
+
+                renderer.toneMappingExposure = 1.0;
+            }, 200);
+        }
+
+        function updateLogicRoom(time, delta) {
+            if (tileBoard) tileBoard.update(time, delta);
+        }
+
+        function updateEmotionRoom(time, delta) {
+            const isCalming = keys[' '];
+            if (tvWall) tvWall.update(time, delta, isCalming);
+        }
+
+        function updateMemoryRoom(time, delta) {
+            memoryFragments.forEach(f => f.update(time, delta));
+        }
+
+        function updateEnding(time, delta) {
+            const centerText = document.getElementById('center-text');
+            centerText.innerHTML = 'The mind was never meant to be a puzzle<br>with clean edges or a single right answer.<br><br>[R] to start over';
+            centerText.style.opacity = '1';
+        }
+
+        // ========== MAIN LOOP ==========
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = Math.min(clock.getDelta(), 0.1);
+            const time = clock.getElapsedTime();
+
+            handleMovement(delta);
+
+            if (state === 'VOID_CHOICE') {
+                updateVoidChoice(time, delta);
+            } else if (state === 'TRANSITION') {
+                updateTransition(time, delta);
+            } else if (state === 'LOGIC_ROOM') {
+                updateLogicRoom(time, delta);
+            } else if (state === 'EMOTION_ROOM') {
+                updateEmotionRoom(time, delta);
+            } else if (state === 'MEMORY_ROOM') {
+                updateMemoryRoom(time, delta);
+            } else if (state === 'ENDING') {
+                updateEnding(time, delta);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // ========== RESET ==========
+        function reset() {
+            state = 'VOID_CHOICE';
+            chosenPath = null;
+            player.position.set(0, 1.6, 5);
+            player.velocity.set(0, 0, 0);
+            player.yaw = 0;
+            player.pitch = 0;
+            renderer.toneMappingExposure = 1.0;
+
+            buildVoidScene();
+
+            document.getElementById('helper-text').style.opacity = '1';
+            setTimeout(() => {
+                document.getElementById('helper-text').style.opacity = '0';
+            }, 8000);
+        }
+
+        // ========== INIT ==========
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, CONFIG.CAMERA_FAR);
+            camera.position.copy(player.position);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, CONFIG.MAX_PIXEL_RATIO));
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.0;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            clock = new THREE.Clock();
+
+            setupInput();
+            buildVoidScene();
+
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            animate();
+        }
+
+        init();
+    </script>
+</body>
+</html>
