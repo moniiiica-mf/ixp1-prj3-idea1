@@ -479,10 +479,11 @@
                 ctx.fillText(emotion, 128, 80);
 
                 const texture = new THREE.CanvasTexture(canvas);
+                texture.needsUpdate = true;
                 const material = new THREE.MeshStandardMaterial({
                     map: texture,
-                    emissive: CONFIG.COLORS.EMOTION,
-                    emissiveIntensity: 0.3
+                    emissive: new THREE.Color(CONFIG.COLORS.EMOTION),
+                    emissiveIntensity: 0.9
                 });
 
                 const screen = new THREE.Mesh(new THREE.PlaneGeometry(1, 0.6), material);
@@ -518,7 +519,7 @@
             }
 
             update(time, delta, isCalming) {
-                const intensity = isCalming ? 0.1 : 0.3 + Math.sin(time * 2) * 0.2;
+                const intensity = isCalming ? 0.35 : 0.9 + Math.sin(time * 2) * 0.2;
 
                 this.screens.forEach(screen => {
                     screen.material.emissiveIntensity = THREE.MathUtils.lerp(
@@ -627,6 +628,15 @@
         }
 
         // ========== SCENE BUILDERS ==========
+        function placeInFrontOfCamera(object3D, distance = 3.5, yOffset = 1.2) {
+            // place object in front of camera, respecting yaw
+            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+            const pos = camera.position.clone().add(forward.multiplyScalar(distance));
+            object3D.position.copy(pos);
+            object3D.position.y = yOffset; // lift a bit so the grid of TVs is nicely framed
+            object3D.lookAt(camera.position.clone().add(forward.multiplyScalar(10)));
+        }
+
         function buildVoidScene() {
             clearScene();
 
@@ -722,12 +732,20 @@
         function buildEmotionRoom() {
             clearScene();
 
+            // Re-center player/camera so we face -Z
+            player.position.set(0, 1.6, 0.5);
+            player.yaw = 0;
+            player.pitch = 0;
+            camera.position.copy(player.position);
+            camera.rotation.set(player.pitch, player.yaw, 0);
+
             scene.background = new THREE.Color(0x1a0505);
             scene.fog = new THREE.Fog(0x24060B, 16, 60);
 
             // TV Wall
             tvWall = new TVWall();
             scene.add(tvWall.group);
+            placeInFrontOfCamera(tvWall.group, 3.5, 1.4);
 
             // Lighting
             const ambient = new THREE.AmbientLight(0x442020, 0.5);
@@ -835,16 +853,18 @@
         // ========== INPUT ==========
         function setupInput() {
             window.addEventListener('keydown', e => {
-                keys[e.key.toLowerCase()] = true;
+                const k = e.key.toLowerCase();
+                keys[k] = true;
+                if (k === ' ' || k === 'space' || k === 'spacebar') keys['space'] = true;
 
-                if (e.key.toLowerCase() === 'r') reset();
+                if (k === 'r') reset();
 
                 if (state === 'EMOTION_ROOM' && tvWall) {
-                    if (e.key.toLowerCase() === 'q') tvWall.switchChannel(-1);
-                    if (e.key.toLowerCase() === 'e') tvWall.switchChannel(1);
+                    if (k === 'q') tvWall.switchChannel(-1);
+                    if (k === 'e') tvWall.switchChannel(1);
                 }
 
-                if (state === 'MEMORY_ROOM' && e.key.toLowerCase() === 'x') {
+                if (state === 'MEMORY_ROOM' && k === 'x') {
                     raycaster.setFromCamera(new THREE.Vector2(), camera);
                     const intersects = raycaster.intersectObjects(memoryFragments.map(f => f.mesh));
                     if (intersects.length > 0) {
@@ -857,7 +877,11 @@
                 }
             });
 
-            window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+            window.addEventListener('keyup', e => {
+                const k = e.key.toLowerCase();
+                keys[k] = false;
+                if (k === ' ' || k === 'space' || k === 'spacebar') keys['space'] = false;
+            });
 
             window.addEventListener('mousedown', e => {
                 if (e.button === 2) {
@@ -1060,7 +1084,7 @@
         }
 
         function updateEmotionRoom(time, delta) {
-            const isCalming = keys[' '];
+            const isCalming = !!(keys['space']);
             if (tvWall) tvWall.update(time, delta, isCalming);
         }
 
