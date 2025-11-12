@@ -111,7 +111,7 @@
             MAX_PIXEL_RATIO: 1.5,
             CAMERA_FAR: 160,
             MOVE_SPEED: 4,
-            LOOK_SENSITIVITY: 0.003,
+            LOOK_SENSITIVITY: 0.0015,
             COLORS: {
                 VOID_BG: 0x0a0a0f,
                 HAND_SKIN: 0xf5e9da,
@@ -309,27 +309,27 @@
             constructor() {
                 this.group = new THREE.Group();
                 this.tiles = [];
-                this.emptyIndex = 15;
-                this.gridSize = 4;
-                this.tileSize = 0.9;
+                this.emptyIndex = 8;
+                this.gridSize = 3;
+                this.tileSize = 1.1;
                 this.solved = false;
 
                 const targetIndices = [];
-                for (let i = 0; i < 16; i++) targetIndices.push(i);
+                for (let i = 0; i < 9; i++) targetIndices.push(i);
 
                 // Shuffle
-                for (let i = 0; i < 100; i++) {
+                for (let i = 0; i < 25; i++) {
                     const movable = this.getMovableTiles(targetIndices);
                     if (movable.length > 0) {
                         const idx = movable[Math.floor(Math.random() * movable.length)];
-                        const emptyIdx = targetIndices.indexOf(15);
+                        const emptyIdx = targetIndices.indexOf(8);
                         [targetIndices[idx], targetIndices[emptyIdx]] = [targetIndices[emptyIdx], targetIndices[idx]];
                     }
                 }
 
                 this.currentIndices = [...targetIndices];
 
-                for (let i = 0; i < 16; i++) {
+                for (let i = 0; i < 9; i++) {
                     if (i === this.emptyIndex) continue;
 
                     const canvas = document.createElement('canvas');
@@ -368,7 +368,7 @@
             }
 
             getMovableTiles(indices) {
-                const emptyIdx = indices.indexOf(15);
+                const emptyIdx = indices.indexOf(8);
                 const emptyRow = Math.floor(emptyIdx / this.gridSize);
                 const emptyCol = emptyIdx % this.gridSize;
                 const movable = [];
@@ -402,7 +402,7 @@
 
                 const id = clickedTile.userData.id;
                 const clickedIdx = this.currentIndices.indexOf(id);
-                const emptyIdx = this.currentIndices.indexOf(15);
+                const emptyIdx = this.currentIndices.indexOf(8);
 
                 const movable = this.getMovableTiles(this.currentIndices);
                 if (movable.includes(clickedIdx)) {
@@ -415,7 +415,7 @@
             }
 
             checkSolved() {
-                for (let i = 0; i < 15; i++) {
+                for (let i = 0; i < 8; i++) {
                     if (this.currentIndices[i] !== i) return;
                 }
                 this.solved = true;
