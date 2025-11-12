@@ -988,37 +988,50 @@
 
             let maxProgress = 0;
             let maxIdx = -1;
+            let bestAlignment = -1;
 
             strings.forEach((string, idx) => {
-                let alignment = 0;
+                const alignment = forward.dot(string.direction);
+                const angleDeg = Math.acos(Math.max(-1, Math.min(1, alignment))) * (180 / Math.PI);
 
-                if (isMoving) {
-                    alignment = forward.dot(string.direction);
-                    const angleDeg = Math.acos(alignment) * (180 / Math.PI);
-                    if (angleDeg < 20) {
-                        stringProgress[idx] = Math.min(1, stringProgress[idx] + delta * 0.4);
-                    } else {
-                        stringProgress[idx] = Math.max(0, stringProgress[idx] - delta * 0.15);
-                    }
+                if (alignment > bestAlignment) {
+                    bestAlignment = alignment;
+                    maxIdx = idx;
+                }
+
+                if (isMoving && angleDeg < 45) {  // Increased from 20 to 45 degrees
+                    stringProgress[idx] = Math.min(1, stringProgress[idx] + delta * 0.5);
                 } else {
                     stringProgress[idx] = Math.max(0, stringProgress[idx] - delta * 0.2);
                 }
 
                 if (stringProgress[idx] > maxProgress) {
                     maxProgress = stringProgress[idx];
-                    maxIdx = idx;
                 }
             });
 
             strings.forEach((string, idx) => {
-                string.update(time, delta, idx === maxIdx);
+                string.update(time, delta, idx === maxIdx && stringProgress[idx] > 0.1);
             });
+
+            // Show hint when aligned
+            const gateUI = document.getElementById('gate-ui');
+            if (maxIdx >= 0 && bestAlignment > 0.7 && maxProgress < 1) {  // ~45 degrees
+                const stringNames = { 0: 'Logic', 1: 'Emotion', 2: 'Memory' };
+                const stringName = strings[maxIdx].name;
+                const displayName = stringName.charAt(0).toUpperCase() + stringName.slice(1);
+                gateUI.innerHTML = `Facing: <strong>${displayName}</strong><br>Hold [W] to follow this path<br>Progress: ${Math.floor(maxProgress * 100)}%`;
+                gateUI.style.opacity = '1';
+            } else {
+                gateUI.style.opacity = '0';
+            }
 
             drawProgressRing(maxProgress);
 
             if (maxProgress >= 1.0) {
                 state = 'TRANSITION';
                 chosenPath = strings[maxIdx].name;
+                gateUI.style.opacity = '0';
             }
         }
 
